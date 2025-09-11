@@ -1,6 +1,7 @@
 const express = require("express");
 const EventSettings = require("../models/EventSettings");
 const { authenticateToken, requirePermission } = require("../middleware/auth");
+
 const router = express.Router();
 
 // Get all settings
@@ -111,6 +112,12 @@ router.post(
           updatedBy: req.user.id,
         },
         {
+          settingName: "softDrinkLimit",
+          settingValue: 3,
+          description: "Maximum number of soft drinks per participant",
+          updatedBy: req.user.id,
+        },
+        {
           settingName: "eventName",
           settingValue: "Cricket Championship 2024",
           description: "Name of the cricket event",
@@ -129,6 +136,7 @@ router.post(
         const existing = await EventSettings.findOne({
           settingName: setting.settingName,
         });
+
         if (!existing) {
           const newSetting = new EventSettings(setting);
           await newSetting.save();

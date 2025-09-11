@@ -7,8 +7,8 @@ const { sendQRCodeEmail } = require("../utils/emailSender");
 const { authenticateToken, requirePermission } = require("../middleware/auth");
 const multer = require("multer");
 const XLSX = require("xlsx");
-const fs = require("fs");
-const path = require("path");
+const fs = require('fs');
+const path = require('path');
 
 const router = express.Router();
 
@@ -17,10 +17,10 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
-// In-memory store for failed imports
+// In-memory store for failed imports (can be replaced with file/database storage)
 let failedImportsStore = [];
 
-// Helpers
+// Helper functions
 const toBool = (v) => {
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
@@ -990,83 +990,87 @@ router.post("/bulk-assign-fixed", authenticateToken, requirePermission("canManag
   }
 });
 
-// Export all participants to Excel file (FINALIZED)
-router.post(
-  "/export-excel",
-  authenticateToken,
-  requirePermission("canManageSettings"),
-  async (req, res) => {
-    try {
-      // Fetch minimal fields for export
-      const participants = await Participant.find({})
-        .select("participantId name email phone isPlayer")
-        .lean();
+// Export all participants to Excel file
+router.post("/export-excel", authenticateToken, requirePermission("canManageSettings"), async (req, res) => {
+  try {
+    // Get all participants from database - matching your working endpoint
+    const participants = await Participant.find({})
+      .select("participantId name email phone isPlayer")
+      .lean(); // Add lean() for better performance
 
-      if (!participants || participants.length === 0) {
-        return res.status(404).json({
-          success: false,
-          code: "NO_PARTICIPANTS_FOUND",
-          message: "No participants found to export",
-        });
-      }
-
-      // Map to export rows
-      const exportData = participants.map((p) => ({
-        "QR Code ID": p.participantId || "",
-        Name: p.name || "",
-        Email: p.email || "",
-        "Phone Number": p.phone || "N/A",
-        "Is Player": p.isPlayer ? "Yes" : "No",
-      }));
-
-      // Ensure exports folder
-      const exportsDir = path.join(__dirname, "..", "exports");
-      if (!fs.existsSync(exportsDir)) {
-        fs.mkdirSync(exportsDir, { recursive: true });
-      }
-
-      // Create workbook
-      const workbook = XLSX.utils.book_new();
-      const worksheet = XLSX.utils.json_to_sheet(exportData);
-
-      // Column widths
-      worksheet["!cols"] = [
-        { wch: 15 }, // QR Code ID
-        { wch: 25 }, // Name
-        { wch: 30 }, // Email
-        { wch: 18 }, // Phone Number
-        { wch: 10 }, // Is Player
-      ];
-
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Participants");
-
-      // Filename with timestamp
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").split(".");
-      const filename = `participants_export_${timestamp}.xlsx`;
-      const filePath = path.join(exportsDir, filename);
-
-      // Write file
-      XLSX.writeFile(workbook, filePath);
-
-      return res.json({
-        success: true,
-        message: "Participants exported successfully",
-        file: {
-          filename,
-          path: `exports/${filename}`,
-          absolutePath: filePath,
-        },
-      });
-    } catch (error) {
-      console.error("Export participants error:", error);
-      return res.status(500).json({
+    if (!participants || participants.length === 0) {
+      return res.status(404).json({
         success: false,
-        code: "EXPORT_PARTICIPANTS_SERVER_ERROR",
-        message: "Error exporting participants to Excel",
-        details: error.message,
+        code: "NO_PARTICIPANTS_FOUND",
+        message: "No participants found to export",
       });
     }
+
+    // Format data for Excel export
+    const exportData = participants.map(participant => ({
+      "QR Code ID": participant.participantId,
+      "Name": participant.name,
+      "Email": participant.email,
+      "Phone Number": participant.phone || "N/A",
+      "Is Player": participant.isPlayer ? "Yes" : "No"
+    }));
+
+    // Create exports directory if it doesn't exist
+    const exportsDir = path.join(__dirname, '..', 'exports');
+    if (!fs.existsSync(exportsDir)) {
+      fs.mkdirSync(exportsDir, { recursive: true });
+    }
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
+    const filename = `participants_export_${timestamp}.xlsx`;
+    const filePath = path.join(exportsDir, filename);
+
+    // Create workbook and worksheet
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+
+    // Set column widths for better formatting
+    const columnWidths = [
+      { wch: 15 }, // QR Code ID
+      { wch: 25 }, // Name
+      { wch: 30 }, // Email
+      { wch: 15 }, // Phone Number
+      { wch: 10 }  // Is Player
+    ];
+    worksheet['!cols'] = columnWidths;
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Participants");
+
+    // Write file to server
+    XLSX.writeFile(workbook, filePath);
+
+    // Get file stats for response
+    const stats = fs.statSync(filePath);
+
+    return res.json({
+      success: true,
+      message: "Participants exported successfully",
+      export: {
+        filename: filename,
+        filePath: filePath,
+        participantCount: participants.length,
+        fileSize: `${(stats.size / 1024).toFixed(2)} KB`,
+        exportedAt: new Date().toISOString(),
+        exportedBy: req.user.username
+      }
+    });
+
+  } catch (error) {
+    console.error("Export participants error:", error);
+    return res.status(500).json({
+      success: false,
+      code: "EXPORT_PARTICIPANTS_SERVER_ERROR",
+      message: "Error exporting participants to Excel",
+      details: error.message,
+    });
   }
-);
+});
 
 module.exports = router;
