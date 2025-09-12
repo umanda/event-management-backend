@@ -8,7 +8,7 @@ const router = express.Router();
 // Dynamic stats endpoint
 router.get("/stats", authenticateToken, async (req, res) => {
   try {
-    const totalParticipants = await Participant.countDocuments();
+    const totalParticipants = Math.max(0, await Participant.countDocuments() - 2);
     const presentParticipants = await Participant.countDocuments({ isPresent: true });
     const totalPlayers = await Participant.countDocuments({ isPlayer: true });
     const presentPlayers = await Participant.countDocuments({ isPlayer: true, isPresent: true });
@@ -22,7 +22,7 @@ router.get("/stats", authenticateToken, async (req, res) => {
     // Calculate dynamic entitlement stats
     const entitlementStats = {};
     for (const template of templates) {
-      entitlementStats[template.name] = calculateEntitlementStats(allParticipants, template);
+      entitlementStats[template.name] = calculateEntitlementStats(allParticipants, template, totalParticipants);
     }
 
     // Get recent attendance
@@ -93,8 +93,7 @@ router.get("/stats", authenticateToken, async (req, res) => {
   }
 });
 
-// Helper function for dynamic entitlement stats
-function calculateEntitlementStats(participants, template) {
+function calculateEntitlementStats(participants, template, adjustedTotalParticipants) {
   const eligible = participants.filter((p) =>
     p.entitlements.some((e) => e.name === template.name)
   );
@@ -118,8 +117,8 @@ function calculateEntitlementStats(participants, template) {
     return {
       given: givenParticipants.length,
       pending: pendingParticipants.length,
-      totalEligible: eligible.length,
-      percentage: eligible.length > 0 ? Math.round((givenParticipants.length / eligible.length) * 100) : 0,
+      totalEligible: adjustedTotalParticipants, 
+      percentage: adjustedTotalParticipants > 0 ? Math.round((givenParticipants.length / adjustedTotalParticipants) * 100) : 0,
       totalCountGiven,
       isCountable: true,
     };
@@ -137,8 +136,8 @@ function calculateEntitlementStats(participants, template) {
     return {
       given: given.length,
       pending: pending.length,
-      totalEligible: eligible.length,
-      percentage: eligible.length > 0 ? Math.round((given.length / eligible.length) * 100) : 0,
+      totalEligible: adjustedTotalParticipants, 
+      percentage: adjustedTotalParticipants > 0 ? Math.round((given.length / adjustedTotalParticipants) * 100) : 0,
       isCountable: false,
     };
   }
