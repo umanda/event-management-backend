@@ -1069,4 +1069,216 @@ router.post(
   }
 );
 
+// Bulk update existing entitlement maxCount based on current settings
+router.post(
+  "/bulk-update-entitlement-limits",
+  authenticateToken,
+  requirePermission("canManageSettings"),
+  async (req, res) => {
+    try {
+      const { entitlementName, newMaxCount, participantType } = req.body;
+
+      // Validation
+      if (!entitlementName) {
+        return res.status(400).json({
+          success: false,
+          code: "ENTITLEMENT_NAME_REQUIRED",
+          message: "entitlementName is required"
+        });
+      }
+
+      if (newMaxCount === undefined || newMaxCount === null) {
+        return res.status(400).json({
+          success: false,
+          code: "MAX_COUNT_REQUIRED", 
+          message: "newMaxCount is required"
+        });
+      }
+
+      const maxCount = parseInt(newMaxCount);
+      if (isNaN(maxCount) || maxCount < 0) {
+        return res.status(400).json({
+          success: false,
+          code: "INVALID_MAX_COUNT",
+          message: "newMaxCount must be a valid positive number"
+        });
+      }
+
+      // Build filter for participant types
+      let participantFilter = {};
+      if (participantType === "players") {
+        participantFilter.isPlayer = true;
+      } else if (participantType === "participants") {
+        participantFilter.isPlayer = false;
+      }
+      // If participantType is "all" or undefined, no filter applied
+
+      // First, check how many participants have this entitlement
+      const participantsWithEntitlement = await Participant.countDocuments({
+        ...participantFilter,
+        "entitlements.name": { $regex: new RegExp(`^${entitlementName}$`, "i") }
+      });
+
+      if (participantsWithEntitlement === 0) {
+        return res.json({
+          success: true,
+          message: `No participants found with entitlement "${entitlementName}"`,
+          modifiedCount: 0,
+          matchedCount: 0
+        });
+      }
+
+      // Update all participants with this entitlement (case-insensitive)
+      const updateResult = await Participant.updateMany(
+        {
+          ...participantFilter,
+          "entitlements.name": { $regex: new RegExp(`^${entitlementName}$`, "i") }
+        },
+        {
+          $set: {
+            "entitlements.$[elem].maxCount": maxCount
+          }
+        },
+        {
+          arrayFilters: [
+            { "elem.name": { $regex: new RegExp(`^${entitlementName}$`, "i") } }
+          ]
+        }
+      );
+
+      // Log the update for audit purposes
+      console.log(`Bulk entitlement update completed:`, {
+        entitlementName,
+        newMaxCount: maxCount,
+        participantType: participantType || "all",
+        modifiedCount: updateResult.modifiedCount,
+        matchedCount: updateResult.matchedCount,
+        performedBy: req.user.username
+      });
+
+      return res.json({
+        success: true,
+        message: `Updated ${updateResult.modifiedCount} participants with "${entitlementName}" limit to ${maxCount}`,
+        entitlementName,
+        newMaxCount: maxCount,
+        participantType: participantType || "all",
+        modifiedCount: updateResult.modifiedCount,
+        matchedCount: updateResult.matchedCount,
+        performedBy: req.user.username,
+        performedAt: new Date()
+      });
+
+    } catch (error) {
+      console.error("Bulk update entitlement limits error:", error);
+      return res.status(500).json({
+        success: false,
+        code: "BULK_UPDATE_SERVER_ERROR",
+        message: "Error updating entitlement limits",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Smart sync endpoint - automatically updates all known entitlements based on current settings
+router.post(
+  "/sync-entitlement-limits",
+  authenticateToken,
+  requirePermission("canManageSettings"),
+  async (req, res) => {
+    try {
+      const { participantType } = req.body;
+
+      // Build filter for participant types
+      let participantFilter = {};
+      if (participantType === "players") {
+        participantFilter.isPlayer = true;
+      } else if (participantType === "participants") {
+        participantFilter.isPlayer = false;
+      }
+
+      // Get current settings that override entitlement limits
+      const settings = await EventSettings.find({
+        settingName: { $in: ["beerLimit", "softDrinkLimit"] }
+      });
+
+      const settingsMap = {};
+      settings.forEach(setting => {
+        settingsMap[setting.settingName] = setting.settingValue;
+      });
+
+      // Define entitlement mappings
+      const entitlementMappings = [
+        { name: "Beer", settingKey: "beerLimit" },
+        { name: "Soft Drinks", settingKey: "softDrinkLimit" },
+        { name: "Soft Drink", settingKey: "softDrinkLimit" }
+      ];
+
+      const updateResults = [];
+      let totalModified = 0;
+
+      for (const mapping of entitlementMappings) {
+        if (settingsMap[mapping.settingKey] !== undefined) {
+          const newMaxCount = settingsMap[mapping.settingKey];
+
+          // Update this specific entitlement
+          const updateResult = await Participant.updateMany(
+            {
+              ...participantFilter,
+              "entitlements.name": { $regex: new RegExp(`^${mapping.name}$`, "i") }
+            },
+            {
+              $set: {
+                "entitlements.$[elem].maxCount": newMaxCount
+              }
+            },
+            {
+              arrayFilters: [
+                { "elem.name": { $regex: new RegExp(`^${mapping.name}$`, "i") } }
+              ]
+            }
+          );
+
+          updateResults.push({
+            entitlementName: mapping.name,
+            settingKey: mapping.settingKey,
+            newMaxCount,
+            modifiedCount: updateResult.modifiedCount,
+            matchedCount: updateResult.matchedCount
+          });
+
+          totalModified += updateResult.modifiedCount;
+        }
+      }
+
+      // Log the sync operation
+      console.log(`Smart entitlement sync completed:`, {
+        participantType: participantType || "all",
+        totalModified,
+        updates: updateResults,
+        performedBy: req.user.username
+      });
+
+      return res.json({
+        success: true,
+        message: `Smart sync completed. Updated ${totalModified} entitlement records across all participants`,
+        participantType: participantType || "all",
+        totalModified,
+        updates: updateResults,
+        performedBy: req.user.username,
+        performedAt: new Date()
+      });
+
+    } catch (error) {
+      console.error("Smart sync entitlement limits error:", error);
+      return res.status(500).json({
+        success: false,
+        code: "SMART_SYNC_SERVER_ERROR",
+        message: "Error in smart sync of entitlement limits",
+        details: error.message
+      });
+    }
+  }
+);
+
 module.exports = router;
